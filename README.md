@@ -4,6 +4,10 @@ Simulate an epidemic on a metapopulation network with time-varying mobility. Thi
 
 ## Install
 
+```python
+python setup.py install
+```
+
 ## Documentation
 
 ### Introduction
