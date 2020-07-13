@@ -1,59 +1,127 @@
 """
-Provides classes for the epidemiological model
+Provides the class for the epidemiological model
 """
 import numpy as np
 from scipy.stats import binom, expon
-
 
 class SIRModel():
     """
     An SIR metapopulation model with commuter-type mobility.
 
-    There are M subpopulations, and M commuter compartments within each subpopulation.
+    This model used in the following paper (a detailed description of the model
+    can be found there):
 
-    Two different modes:
+    'COVID-19 lockdown induces structural changes in mobility
+    networks -- Implication for mitigating disease dynamics'
+    Frank Schlosser, Benjamin F. Maier, David Hinrichs,
+    Adrian Zachariae, Dirk Brockmann
+    https://arxiv.org/abs/2007.01583
+
+    See also notebooks in /examples for usage examples.
+
+    The system is composed of M subpopulations. Individuals can commute 
+    between pairs of subpopulations. The weight of commuter flows is given
+    by the mobility-matrix of shape M x M.
+
+    The model can consider changes in absolute mobility flux (for example
+    due to lockdown effects). For this, it is a assumed that the matrix
+    'mobility' contains the current, changed flux, and the matrix
+    'mobility_baseline' contains the flow during normal times.
+
+    Changes in mobility flux are taken into account in two different scenarios:
+     - In the 'isolation' scenario, it is assumed that a reduction in mobility
+        means that individuals are effectively removed from the system
+     - In the 'distancing' scenario, a reduction in mobility instead leads
+        to a reduction in the effective transmission rate in the system.
+    A more detailed description of the scenarios and the model can be found
+    in the publication.
 
     Parameters
-    ----------
+    -----------
     mobility: numpy.ndarray
-        The origin-destination mobility matrix of the system.
-        Has to be quadratic, i.e. of shape MxM.
+        The origin-destination mobility matrix of the system. Has to symmetric,
+        of shape MxM. Each entry ij depicts the strength of the commuter flow
+        between subpopulations i and j. Self-flows ii should be included,
+        indicating people that live and commute in the same subpopulation.
 
     subpopulation_sizes: numpy.ndarray 
-        The population sizes in the districts M.
-        Shape 1xM.
+        The population sizes in the subpopulations, of shape 1xM.
 
-    mobility_baseline: numpy.ndarray
-        An optional baseline mobiliy matrix.
+    mobility_baseline: None or numpy.ndarray (default None)
+        An optional baseline mobility matrix. If given, it is assumed that
+        the current mobility is a change in flux from the baseline matrix.
+        The change is implemented using one of the quarantine scenarios.
 
-    quarantine_mode: str
-        Which type of quarantine to use.
-        Possibilities: 'isolation', 'distancing'
+    quarantine_mode: None or str (default None)
+        Which type of quarantine scenario to use, see description above.
+        Valid options:: 'isolation', 'distancing'.
 
-    outbreak_source: str or int or None
+    outbreak_source: str or int or None (default None)
         Where to seed the infection.
         Possible values:
-         - 'random': A random subpopulation is chosen.
+         - 'random': A random subpopulation m is chosen.
          - int: If an integer m is given, the corresponding subpopulation
             m is chosen as the infection site.
          - None: Defaults to random subpopulation.
 
+    T_max: int (default 100)
+        The time until which to run the simulation.
+
+    dt: float (default 0.1)
+        The simulation time increment. Lower values reduce stochastic noise.
+
+    dt_save: float (default 1)
+        The simulation time interval at which to save observables.
+    
+    mu: float (default 1/8)
+        The recovery rate in the SIR model.
+
+    R0: float (default 3.0)
+        The basic reproduction number.
+
+    I0: int (default 10)
+        The initial number of infected.
+
+    save_observables: list of str
+        Which observables to save. Possible options:
+         - 'epi_total': The total number of S, I and R in the system at each time.
+         - 'epi_subpopulations': The number of S, I and R in each subpopulation.
+         - 'arrival_times': A list of arrival times, i.e. when the epidemic
+                arrived in each of the subpopulations.
+
+    VERBOSE: bool (default False)
+        Whether to print information on the running simulation.
+
     Attributes
     ----------
     population: numpy.ndarray
-        The population of the system
+        The population of the system, divided into the M subpopulations and
+        commuter compartments. Matrix of shape MxM, where the entry ij are the
+        individual in subpopulation i which commute to j.
+
+        The population matrix is created by normalizing the mobility matrix
+        to the number of individuals in each subpopulation (given by the 
+        vector subpopulation_sizes).
 
     kappa: numpy.ndarray
-        The quarantine factor
+        The quarantine factor, calculated as the ratio of mobility and
+        mobility_baseline. It is used in the simulation in different ways
+        depending on which quarantine scenario is chosen.
+
+    observables: dict
+        A dictionary of observables which are returned after the simulation
+        is run.
 
 
     Example
     -------
     .. code:: python
         
-        >>> sir = SIRModel(mobility, population)
-        >>> sir.run_simulation()
-        [ "S", "I", "R" ]
+        >>> model = SIRModel(mobility, subpopulation_sizes)
+        >>> results = model.run_simulation(VERBOSE=True)
+        Starting Simulation ...
+        Simulation completed
+        Time: 0min 3.35s
     """
     def __init__(self,
                 mobility,
@@ -100,13 +168,13 @@ class SIRModel():
 
         self.VERBOSE = VERBOSE
 
-
         self._initialize()
 
+    ## INITIALIZATION ##########################################
 
     def _initialize(self):
         """
-        Initialize the model
+        Initialize the model for given input data.
         """
         self._check_if_input_data_valid()
 
@@ -115,10 +183,10 @@ class SIRModel():
         if self.quarantine_mode:
             self._calculate_quarantine_factor()
 
-
     def _check_if_input_data_valid(self):
         """
-        Check if the given input data is valid
+        Some basic checks whether the input parameters and data are
+        in the correct formats.
         """
         # Mobility matrix
         assert(type(self.mobility) is np.ndarray)
@@ -139,20 +207,18 @@ class SIRModel():
         if self.outbreak_source:
             assert ((type(self.outbreak_source) is int) or
                     (self.outbreak_source=='random')),\
-                    "Outbreak source has to be an integer, 'random', or None"
+                    "Outbreak source has to be an integer, 'random', or None."
             if type(self.outbreak_source) is int:
                 assert self.outbreak_source < self.mobility.shape[0],\
-                    "Outbreak source has to be within system size"
+                    "Outbreak source has to be within system size."
 
     def _initialize_population(self):
         """
-        Create the commuter population.
+        Create the population matrix.
 
-        The population, where the sizes in each subpopulation is given,
-        is distributed into the commuting subpopulations according to
-        the mobility.
+        Creates the MxM matrix 'population' containing the number of
+        individuals in each subpopulation-commuter compartment.
         """
-
         # Normalize the mobility matrix for each row (origin)
         mobility_subpops = self.mobility.sum(axis=1)
         mobility_normalized = (self.mobility.T / mobility_subpops).T
@@ -161,16 +227,15 @@ class SIRModel():
         population = (mobility_normalized.T * self.subpopulation_sizes).T
         self.population = np.round(population).astype(int)
 
-
     def _calculate_quarantine_factor(self):
         """ 
-        Calculates the influence of quarantine.
+        Calculates the influence factor 'kappa' of quarantine.
 
         Only applied if a "quarantine_mode" is specified. Then, kappa is
         a dynamic factor that accounts for the influence of quarantine,
         and is calculated here.
-
         """
+        # Get baseline mobility
         mob_baseline = self.mobility_baseline.copy()
         mob_baseline[mob_baseline == 0] = 1
 
@@ -178,14 +243,18 @@ class SIRModel():
         self.kappa = self.mobility / mob_baseline
 
 
-
-    # SIMULATION
+    ## SIMULATION ##########################################
 
     def reset_initialize_simulation(self):
         """ 
-        Resets the simulation and initializes
+        Resets the simulation and prepare a new one.
+
+        This initializes the compartments S, I and R (and applies
+        quarantine isolation effects if appropriate), seeds the infection,
+        prepares the result observables.
         """
-        # If isolation: Move a fraction *kappa* of S to R compartment initially
+        # If isolation scenario:
+        # Move a fraction *kappa* of S to R compartment initially
         if self.quarantine_mode == 'isolation':
             self.S = np.round(self.population * self.kappa).astype(int)
             self.R = np.round(self.population * (1-self.kappa)).astype(int)
@@ -209,38 +278,31 @@ class SIRModel():
             M = self.population.shape[0] # number of subpopulations
             self.observables['T_arrival'] = np.ones(M) * self.T_max
 
-  
+        self._seed_infection()
 
     def _seed_infection(self):
         """
         Initialize the infection seed.
 
-        Choses a subpopulation where the infection starts, and distributes
+        Choses a subpopulation m where the infection starts, and distributes
         the initial number of infected I0 among the commuter compartments.
         """
-        M = self.mobility.shape[0] # Number of compartments
+        M = self.mobility.shape[0]
 
-        # Determine infected subpopulations
+        # Determine infected subpopulation
         if self.outbreak_source in ['random', None]:    
             idx = np.random.choice(np.arange(M))
         else:
             idx = self.outbreak_source
         
+        # Check if population big enough to seed infection
         infected_subpopulation_size = np.sum(self.S[idx])
         if infected_subpopulation_size < self.I0:
             raise ValueError(f"Cannot seed infection: Subpopulation {idx} "+\
                 f"contains only {infected_subpopulation_size} individiuals, "+\
                 f"but I0={self.I0}")
-
-        # Choose the commuter compartments within the location idx
-        # infected_compartments = np.random.choice(M,
-        #                         p=self.S[idx]/self.S[idx].sum(),
-        #                         replace=True, size=self.I0)
-        # # Assign the infecteds
-        # for i in infected_compartments:
-        #     self.S[idx][i] -= 1
-        #     self.I[idx][i] += 1
-
+        
+        # Distribute the infected among the commuter-subcompartments
         for infected in range(self.I0):
             infected_compartment = np.random.choice(M, 
                                             p=self.S[idx]/self.S[idx].sum())
@@ -251,7 +313,11 @@ class SIRModel():
 
     def run_simulation(self):
         """ 
-        Run the simulation
+        Run the simulation.
+
+        Simulates the SIR epidemic up until time T_max. Simulation dynamics
+        are updated in increments of dt. At intervals dt_save, observables
+        are saved.
         """
         self.reset_initialize_simulation()
 
@@ -260,13 +326,11 @@ class SIRModel():
             import time
             time_start = time.time()
 
-        self._seed_infection()
-
         t = 0
-        while t < self.T_max + self.dt:
-            
+        while t < self.T_max + self.dt:            
+            # Update infection dynamics
             self._update_infection()
-            
+
             # Save observables
             remainder = t % self.dt_save
             is_save_time = np.allclose(remainder, 0.0, atol=1e-4) or np.allclose(remainder, self.dt_save, atol=1e-4)
@@ -276,15 +340,6 @@ class SIRModel():
             # Update time
             t += self.dt
 
-
-        # self._save_observables(t=0)
-        # for t in self.tqdm_counter(np.arange(1, self.T_max)):
-        #     # Infection
-        #     self._update_infection()
-
-        #     if np.allclose(t % self.dt_save, 0.0):
-        #         self._save_observables(t)
-
         if self.VERBOSE:
             print("Simulation completed")
             minutes, seconds = divmod(time.time() - time_start, 60)
@@ -293,7 +348,7 @@ class SIRModel():
 
     def _update_infection(self):
         """
-        Update the infection dynamics
+        Update the infection dynamics for one time increment [t, t+dt].
         """
         # Do nothing if no infected (to speed up simulation)
         if np.sum(self.I) < 1:
@@ -324,17 +379,13 @@ class SIRModel():
                 lambda_work_eff = self.kappa[:, i] * lambda_work[i]
             # Calculate infections
             # Home force of infection
-            try:
-                dSI_i = binom.rvs(S[i], expon.cdf(lambda_home_eff * self.dt))
-                S[i] -= dSI_i
-                I[i] += dSI_i
-                # Work force of infection
-                dSI_i = binom.rvs(S[i], expon.cdf(lambda_work_eff * self.dt))
-                S[i] -= dSI_i
-                I[i] += dSI_i
-            except ValueError as e:
-                print(e)
-                breakpoint()
+            dSI_i = binom.rvs(S[i], expon.cdf(lambda_home_eff * self.dt))
+            S[i] -= dSI_i
+            I[i] += dSI_i
+            # Work force of infection
+            dSI_i = binom.rvs(S[i], expon.cdf(lambda_work_eff * self.dt))
+            S[i] -= dSI_i
+            I[i] += dSI_i
 
         # Calculate recoveries
         dIR = binom.rvs(I, expon.cdf(self.mu * self.dt))
@@ -344,8 +395,6 @@ class SIRModel():
         self.S = S
         self.I = I
         self.R = R
-
-
 
     def _save_observables(self, t):
         """
@@ -366,8 +415,8 @@ class SIRModel():
             self.observables['I'].append( self.I.sum(axis=1) / subpopulations)
             self.observables['R'].append( self.R.sum(axis=1) / subpopulations)
         if 'arrival_times' in self.save_observables:
-            # The arrival time of the epidemic in each subpopulation
-
+            # Save the arrival time of the epidemic in each subpopulation
+            #
             # The threshold for the number of infected when
             # the epidemic has reached a subpopulation
             I_threshold = 0.001
@@ -381,22 +430,12 @@ if __name__ == '__main__':
     # Create dummy data
     M = 10 # Number of locations
     mobility = np.random.rand(M, M)
-    subpopulation_sizes = np.random.randint(1,100,M)
+    subpopulation_sizes = np.random.randint(20,100,M)
 
-    model = SIRModel(mobility, subpopulation_sizes)
-    # breakpoint()
+    # Create model
+    model = SIRModel(mobility, subpopulation_sizes, VERBOSE=True)
 
-    # Dummy with baseline
-    # Create dummy data
-    M = 10 # Number of locations
-    mobility = np.random.rand(M, M)
-    subpopulation_sizes = np.random.randint(1,100,M)
+    # Run simulation
+    results = model.run_simulation()
 
-    quarantine_mode = 'isolation'
-    # mobility_baseline = mobility * 2
-    mobility_baseline = mobility * np.random.rand(M,M)
-
-    model = SIRModel(mobility, subpopulation_sizes, mobility_baseline, 
-                        quarantine_mode=quarantine_mode)
-
-
+    
