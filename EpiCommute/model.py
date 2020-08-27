@@ -239,9 +239,12 @@ class SIRModel():
         mob_baseline = self.mobility_baseline.copy()
         mob_baseline[mob_baseline == 0] = 1
 
-        # Calculate kappa
-        self.kappa = self.mobility / mob_baseline
-
+        # Calculate kappa for each subpopulation i
+        n_subpops = mob_baseline.shape[0]
+        for i in range(n_subpops):
+            k_outgoing = np.sum(self.mobility[i, :]) / np.sum(mob_baseline[i, :])
+            k_ingoing = np.sum(self.mobility[:, i]) / np.sum(mob_baseline[:, i])
+            self.kappa[i, :] = np.mean([k_outgoing, k_ingoing])
 
     ## SIMULATION ##########################################
 
@@ -361,36 +364,33 @@ class SIRModel():
         # Home force of infection
         I_ij_sumj = I.sum(axis=1)
         N_ij_sumj = S.sum(axis=1) + I.sum(axis=1) + R.sum(axis=1)
-        lambda_home = self.beta * I_ij_sumj / N_ij_sumj
+        lambda_home = 0.5 * self.beta * I_ij_sumj / N_ij_sumj
         # Work force of infection
         I_ji_sumj = I.sum(axis=0)
         N_ji_sumj = S.sum(axis=0) + I.sum(axis=0) + R.sum(axis=0)
-        lambda_work = self.beta * I_ji_sumj / N_ji_sumj
+        lambda_work = 0.5 * self.beta * I_ji_sumj / N_ji_sumj
 
-        M = self.S.shape[0] # number of subpopuations
+        M = self.S.shape[0] # number of subpopulations
         for i in range(M):
             # Normal infection rate
             if self.quarantine_mode in [None, 'isolation']:
                 lambda_home_eff = lambda_home[i]
-                lambda_work_eff = lambda_work[i]
+                lambda_work_eff = lambda_work
             # Distancing scenario: Modify transmission rate linearly with kappa
             elif self.quarantine_mode == 'distancing':
                 lambda_home_eff = self.kappa[i, :] * lambda_home[i]
-                lambda_work_eff = self.kappa[:, i] * lambda_work[i]
+                lambda_work_eff = self.kappa[:, i] * lambda_work
             # Calculate infections
             # Home force of infection
-            dSI_i = binom.rvs(S[i], expon.cdf(lambda_home_eff * self.dt))
-            S[i] -= dSI_i
-            I[i] += dSI_i
-            # Work force of infection
-            dSI_i = binom.rvs(S[i], expon.cdf(lambda_work_eff * self.dt))
-            S[i] -= dSI_i
-            I[i] += dSI_i
-
-        # Calculate recoveries
-        dIR = binom.rvs(I, expon.cdf(self.mu * self.dt))
-        I = I - dIR
-        R = R + dIR
+            dSI_i = binom.rvs(S[i], expon.cdf(
+                (lambda_home_eff + lambda_work_eff) * self.dt))
+            # Calculate recoveries
+            dIR_i = binom.rvs(I[i], expon.cdf(self.mu * self.dt))
+            
+            # Update system
+            S[i] = S[i] - dSI_i
+            I[i] = I[i] + dSI_i - dIR_i
+            R[i] = R[i] + dIR_i
 
         self.S = S
         self.I = I
