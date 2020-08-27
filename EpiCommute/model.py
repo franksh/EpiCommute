@@ -244,7 +244,7 @@ class SIRModel():
         for i in range(n_subpops):
             k_outgoing = np.sum(self.mobility[i, :]) / np.sum(mob_baseline[i, :])
             k_ingoing = np.sum(self.mobility[:, i]) / np.sum(mob_baseline[:, i])
-            self.kappa[i, :] = np.mean([k_outgoing, k_ingoing])
+            self.kappa[i, :] = 0.5*(k_outgoing + k_ingoing)
 
     ## SIMULATION ##########################################
 
@@ -306,9 +306,9 @@ class SIRModel():
                 f"but I0={self.I0}")
         
         # Distribute the infected among the commuter-subcompartments
+        P = self.population[idx] / self.population[idx].sum()
         for infected in range(self.I0):
-            infected_compartment = np.random.choice(M, 
-                                            p=self.S[idx]/self.S[idx].sum())
+            infected_compartment = np.random.choice(M, p=P)
             # Assign the infected
             self.S[idx][infected_compartment] -= 1
             self.I[idx][infected_compartment] += 1
@@ -331,14 +331,15 @@ class SIRModel():
 
         t = 0
         while t < self.T_max + self.dt:            
-            # Update infection dynamics
-            self._update_infection()
-
             # Save observables
             remainder = t % self.dt_save
             is_save_time = np.allclose(remainder, 0.0, atol=1e-4) or np.allclose(remainder, self.dt_save, atol=1e-4)
+
             if is_save_time:
                 self._save_observables(t)
+
+            # Update infection dynamics
+            self._update_infection()
 
             # Update time
             t += self.dt

@@ -1,0 +1,10 @@
+README.md
+setup.py
+EpiCommute/__init__.py
+EpiCommute/model.py
+EpiCommute.egg-info/PKG-INFO
+EpiCommute.egg-info/SOURCES.txt
+EpiCommute.egg-info/dependency_links.txt
+EpiCommute.egg-info/not-zip-safe
+EpiCommute.egg-info/requires.txt
+EpiCommute.egg-info/top_level.txt
